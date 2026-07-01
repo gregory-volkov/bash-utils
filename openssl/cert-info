@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cert-info FILE
+
+Description:
+  Show information about all certificates in a local certificate file.
+
+Example:
+  cert-info bundle.crt
+
+Internally runs:
+  openssl storeutl -noout -text -certs FILE
+EOF
+}
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+if [[ $# -ne 1 ]]; then
+  usage >&2
+  exit 1
+fi
+
+file="$1"
+
+if [[ ! -f "$file" ]]; then
+  echo "Error: file not found: $file" >&2
+  exit 1
+fi
+
+openssl storeutl -noout -text -certs "$file"

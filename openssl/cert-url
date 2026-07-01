@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  cert-url [OPTIONS] HOST [PORT]
+
+Description:
+  Connect to a TLS endpoint and print certificate chain info.
+
+Arguments:
+  HOST                  DNS name or IP address
+  PORT                  TLS port, default: 443
+
+Options:
+  -r, --raw             Print raw PEM certificates instead of parsed info
+  -s, --sni NAME        Use custom SNI name. Defaults to HOST
+  --no-sni              Disable SNI
+  --starttls PROTO      Use STARTTLS mode, for example: smtp, imap, pop3, ftp, postgres
+  -h, --help            Show this help message
+
+Examples:
+  cert-url example.com
+  cert-url example.com 443
+  cert-url --raw example.com
+  cert-url --sni example.com 93.184.216.34 443
+  cert-url --starttls smtp smtp.gmail.com 587
+EOF
+}
+
+raw=0
+sni=""
+use_sni=1
+starttls=""
+args=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--raw)
+      raw=1
+      shift
+      ;;
+    -s|--sni)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --sni requires a value" >&2
+        exit 1
+      fi
+      sni="$2"
+      shift 2
+      ;;
+    --no-sni)
+      use_sni=0
+      shift
+      ;;
+    --starttls)
+      if [[ $# -lt 2 ]]; then
+        echo "Error: --starttls requires a protocol" >&2
+        exit 1
+      fi
+      starttls="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      echo "Error: unknown option: $1" >&2
+      usage >&2
+      exit 1
+      ;;
+    *)
+      args+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#args[@]} -lt 1 || ${#args[@]} -gt 2 ]]; then
+  usage >&2
+  exit 1
+fi
+
+host="${args[0]}"
+port="${args[1]:-443}"
+
+if [[ -z "$sni" ]]; then
+  sni="$host"
+fi
+
+cmd=(
+  openssl s_client
+  -connect "${host}:${port}"
+  -showcerts
+  -verify_quiet
+)
+
+if [[ "$use_sni" -eq 1 ]]; then
+  cmd+=(-servername "$sni")
+fi
+
+if [[ -n "$starttls" ]]; then
+  cmd+=(-starttls "$starttls")
+fi
+
+certs="$(
+  printf '' | "${cmd[@]}" 2>/dev/null | awk '
+    /-----BEGIN CERTIFICATE-----/ { in_cert=1 }
+    in_cert { print }
+    /-----END CERTIFICATE-----/ { in_cert=0 }
+  '
+)"
+
+if [[ -z "$certs" ]]; then
+  echo "Error: no certificates found from ${host}:${port}" >&2
+  exit 1
+fi
+
+if [[ "$raw" -eq 1 ]]; then
+  printf '%s\n' "$certs"
+  exit 0
+fi
+
+cert_no=0
+
+printf '%s\n' "$certs" | awk '
+  /-----BEGIN CERTIFICATE-----/ {
+    cert = ""
+    in_cert = 1
+  }
+
+  in_cert {
+    cert = cert $0 ORS
+  }
+
+  /-----END CERTIFICATE-----/ {
+    print cert
+    print "__CERT_SEPARATOR__"
+    in_cert = 0
+  }
+' | while IFS= read -r line; do
+  if [[ "$line" == "__CERT_SEPARATOR__" ]]; then
+    cert_no=$((cert_no + 1))
+
+    echo
+    echo "================ Certificate ${cert_no} ================"
+
+    printf '%s\n' "$cert_pem" | openssl x509 -noout -text
+
+    cert_pem=""
+  else
+    cert_pem+="${line}"$'\n'
+  fi
+done
